@@ -1,0 +1,107 @@
+trigger:
+- main
+
+pool:
+  name: mama
+
+variables:
+- group: PostgreSQL-Secrets
+
+steps:
+- checkout: self
+
+# Step 1: Install SSH Password Client
+- script: |
+    set -e
+
+    sudo apt-get update
+    sudo apt-get install -y sshpass
+
+    sshpass -V
+  displayName: 'Install SSH Password Client'
+
+# Step 2: Install PostgreSQL Server on DB VM
+- script: |
+    set -e
+
+    export SSHPASS="$DB_VM_PASSWORD"
+
+    sshpass -e ssh \
+      -o StrictHostKeyChecking=accept-new \
+      -o PreferredAuthentications=password \
+      -o PubkeyAuthentication=no \
+      -o ConnectTimeout=15 \
+      "$DB_VM_USER@$DB_VM_HOST" \
+      'sudo -n apt-get update &&
+       sudo -n apt-get install -y postgresql postgresql-contrib &&
+       sudo -n systemctl enable --now postgresql &&
+       sudo -n systemctl status postgresql --no-pager'
+
+  displayName: 'Install PostgreSQL Server on DB VM'
+  env:
+    DB_VM_HOST: $(DB_VM_HOST)
+    DB_VM_USER: $(DB_VM_USER)
+    DB_VM_PASSWORD: $(DB_VM_PASSWORD)
+
+# Step 3: Create Database
+- script: |
+    set -e
+
+    export SSHPASS="$DB_VM_PASSWORD"
+
+    sshpass -e ssh \
+      -o StrictHostKeyChecking=accept-new \
+      -o PreferredAuthentications=password \
+      -o PubkeyAuthentication=no \
+      "$DB_VM_USER@$DB_VM_HOST" \
+      "sudo -n -u postgres psql -tAc \"SELECT 1 FROM pg_database WHERE datname = '$DB_NAME'\" | grep -qx 1 || sudo -n -u postgres createdb '$DB_NAME'"
+
+  displayName: 'Create Axion Database'
+  env:
+    DB_VM_HOST: $(DB_VM_HOST)
+    DB_VM_USER: $(DB_VM_USER)
+    DB_VM_PASSWORD: $(DB_VM_PASSWORD)
+    DB_NAME: $(DB_NAME)
+
+
+# Step 4: Deploy Database Schema
+- script: |
+    set -e
+
+    echo "Repository directory:"
+    pwd
+
+    echo "Checking SQL files..."
+
+    ls -l "$(Build.SourcesDirectory)"/*.sql
+
+    export SSHPASS="$DB_VM_PASSWORD"
+
+    echo "Deploying PostgreSQL Extensions..."
+
+    sshpass -e ssh \
+      -o StrictHostKeyChecking=accept-new \
+      -o PreferredAuthentications=password \
+      -o PubkeyAuthentication=no \
+      "$DB_VM_USER@$DB_VM_HOST" \
+      "sudo -n -u postgres psql -d '$DB_NAME' -v ON_ERROR_STOP=1" \
+      < "$(Build.SourcesDirectory)/01-extensions.sql"
+
+    echo "Deploying Telemetry and Alarms Schema..."
+
+    sshpass -e ssh \
+      -o StrictHostKeyChecking=accept-new \
+      -o PreferredAuthentications=password \
+      -o PubkeyAuthentication=no \
+      "$DB_VM_USER@$DB_VM_HOST" \
+      "sudo -n -u postgres psql -d '$DB_NAME' -v ON_ERROR_STOP=1" \
+      < "$(Build.SourcesDirectory)/02-telemetry.sql"
+
+    echo "Database schema deployment completed successfully!"
+
+  displayName: 'Deploy Axion Database Schema'
+  env:
+    DB_VM_HOST: $(DB_VM_HOST)
+    DB_VM_USER: $(DB_VM_USER)
+    DB_VM_PASSWORD: $(DB_VM_PASSWORD)
+    DB_NAME: $(DB_NAME)
